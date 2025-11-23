@@ -36,10 +36,10 @@ class BrowserController:
     async def initialize(self):
         """Initialize browser-use agent."""
         try:
-            self.browser = Browser(cdp_url=self.cdp_url)
-            logger.info("Browser-use initialized")
+            # Don't create browser here - create fresh one for each task
+            logger.info("Browser controller ready")
         except Exception as e:
-            logger.error(f"Failed to initialize browser-use: {e}")
+            logger.error(f"Failed to initialize browser controller: {e}")
     
     async def execute_simple_action(self, command: Dict[str, Any]) -> bool:
         """
@@ -128,29 +128,44 @@ class BrowserController:
         Returns:
             Result message
         """
+        browser = None
         try:
-            if not self.browser:
-                await self.initialize()
-            
             logger.info(f"Executing complex task: {description}")
+            
+            # Create fresh browser for each task to avoid stale connections
+            browser = Browser(cdp_url=self.cdp_url)
             
             # Create agent for this task
             agent = Agent(
                 task=description,
                 llm=None,  # Uses default ChatBrowserUse
-                browser=self.browser,
-                max_steps=100,
+                browser=browser,
+                max_steps=50,  # Reduced from 100
             )
             
             # Run agent
             result = await agent.run()
             
             logger.info(f"Task completed: {result}")
+            
+            # Extract meaningful result
+            if hasattr(result, 'final_result'):
+                return str(result.final_result())
             return str(result)
         
         except Exception as e:
             logger.error(f"Complex task error: {e}")
             return f"Error: {e}"
+        
+        finally:
+            # Clean up browser session
+            if browser:
+                try:
+                    # browser-use Browser doesn't need explicit close
+                    # The context manager handles cleanup
+                    pass
+                except Exception as e:
+                    logger.debug(f"Browser cleanup: {e}")
     
     async def _send_to_extension(self, action: Dict[str, Any]) -> bool:
         """
@@ -173,10 +188,5 @@ class BrowserController:
     
     async def cleanup(self):
         """Clean up resources."""
-        if self.browser:
-            try:
-                # browser-use Browser doesn't have close method, just clear reference
-                self.browser = None
-            except Exception as e:
-                logger.error(f"Error cleaning up browser: {e}")
+        # No persistent browser to clean up
         logger.info("Browser controller cleaned up")
