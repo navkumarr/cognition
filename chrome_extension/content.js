@@ -346,6 +346,12 @@ function handleNavigate(action) {
 function handleTab(action) {
     // Tab control is handled by background script
     console.log('Tab action:', action.action);
+    // Forward to background script
+    chrome.runtime.sendMessage({ action: action }, (response) => {
+        if (chrome.runtime.lastError) {
+            console.error('Failed to send tab action to background:', chrome.runtime.lastError);
+        }
+    });
 }
 
 function handleBrowser(action) {

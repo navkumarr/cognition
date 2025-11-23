@@ -15,21 +15,20 @@ class BrowserController:
     
     def __init__(
         self,
-        chrome_ws_url: str = "ws://localhost:8765",
+        hub=None,
         cdp_url: str = "http://localhost:9222",
     ):
         """
         Initialize browser controller.
         
         Args:
-            chrome_ws_url: WebSocket URL for Chrome extension
+            hub: VoiceBrowserHub instance for WebSocket communication
             cdp_url: Chrome DevTools Protocol URL
         """
-        self.chrome_ws_url = chrome_ws_url
+        self.hub = hub
         self.cdp_url = cdp_url
         self.browser: Optional[Browser] = None
         self.agent: Optional[Agent] = None
-        self.ws_connections = set()
         
         logger.info("Browser controller initialized")
     
@@ -180,7 +179,7 @@ class BrowserController:
     
     async def _send_to_extension(self, action: Dict[str, Any]) -> bool:
         """
-        Send action to Chrome extension via WebSocket.
+        Send action to Chrome extension via hub's WebSocket connections.
         
         Args:
             action: Action dictionary
@@ -188,11 +187,42 @@ class BrowserController:
         Returns:
             True if sent successfully
         """
+        if not self.hub:
+            logger.error("No hub instance available")
+            return False
+            
+        if not self.hub.ws_connections:
+            logger.error(f"No WebSocket connections available (hub has {len(self.hub.ws_connections)} connections)")
+            print(f"\n❌ CHROME EXTENSION NOT CONNECTED!")
+            print(f"   Make sure Chrome extension is installed and loaded")
+            print(f"   Check chrome://extensions/ and look for 'Voice Browser Control'")
+            print(f"   The background service worker should show connection logs\n")
+            return False
+        
         try:
-            async with websockets.connect(self.chrome_ws_url) as websocket:
-                await websocket.send(json.dumps(action))
-                logger.info(f"Sent to extension: {action}")
+            message = {"action": action}
+            sent_count = 0
+            
+            # Send to all connected WebSocket clients
+            disconnected = set()
+            for ws in self.hub.ws_connections:
+                try:
+                    await ws.send_json(message)
+                    sent_count += 1
+                except Exception as e:
+                    logger.debug(f"Failed to send to WebSocket: {e}")
+                    disconnected.add(ws)
+            
+            # Remove disconnected clients
+            self.hub.ws_connections -= disconnected
+            
+            if sent_count > 0:
+                logger.info(f"Sent to extension ({sent_count} connections): {action}")
                 return True
+            else:
+                logger.error("No active WebSocket connections")
+                return False
+                
         except Exception as e:
             logger.error(f"Failed to send to extension: {e}")
             return False

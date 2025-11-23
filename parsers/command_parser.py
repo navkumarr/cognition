@@ -26,6 +26,13 @@ class CommandParser:
     
     def __init__(self):
         """Initialize command parser with pattern matching rules."""
+        # Quick check patterns for simple commands that should NEVER use AI agent
+        self.simple_command_keywords = [
+            "scroll", "page up", "page down", "go to top", "go to bottom",
+            "next tab", "previous tab", "last tab", "close tab", "new tab",
+            "go back", "go forward", "refresh", "reload",
+        ]
+        
         self.patterns = {
             # Scrolling
             CommandType.SCROLL: [
@@ -69,6 +76,7 @@ class CommandParser:
                 (r"close\s+tab", self._parse_close_tab),
                 (r"next\s+tab", self._parse_next_tab),
                 (r"previous\s+tab", self._parse_previous_tab),
+                (r"last\s+tab", self._parse_previous_tab),
                 (r"switch\s+to\s+tab\s+(\d+)", self._parse_switch_tab),
             ],
             
@@ -92,7 +100,14 @@ class CommandParser:
             Dictionary with command type and parameters
         """
         text = text.lower().strip()
+        # Remove trailing punctuation (STT often adds periods)
+        text = text.rstrip('.!?,;')
         logger.info(f"Parsing command: {text}")
+        
+        # QUICK CHECK: Ensure simple commands are ALWAYS handled as simple actions
+        # This prevents the AI agent from wasting credits on basic navigation
+        if self._is_simple_command(text):
+            logger.info(f"Quick check: '{text}' identified as simple command")
         
         # Try pattern matching
         for cmd_type, patterns in self.patterns.items():
@@ -119,8 +134,20 @@ class CommandParser:
             "raw_text": text,
         }
     
+    def _is_simple_command(self, text: str) -> bool:
+        """Quick check if command is a simple navigation/control action."""
+        # Check if text starts with or contains simple command keywords
+        for keyword in self.simple_command_keywords:
+            if text.startswith(keyword) or keyword in text:
+                return True
+        return False
+    
     def _is_complex_task(self, text: str) -> bool:
         """Determine if command requires browser-use (complex task)."""
+        # First check if it's a simple command - if so, it's NOT complex
+        if self._is_simple_command(text):
+            return False
+        
         complex_indicators = [
             "book", "buy", "order", "compare", "find cheapest",
             "fill out", "submit", "create account", "log in",

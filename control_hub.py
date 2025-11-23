@@ -62,7 +62,7 @@ class VoiceBrowserHub:
         self.fish_stt = FishSTT(api_key=fish_api_key)
         self.fish_tts = FishTTS(api_key=fish_api_key) if fish_api_key else None
         self.parser = CommandParser()
-        self.browser_controller = BrowserController()
+        self.browser_controller = BrowserController(hub=self)
         
         # State
         self.is_local_listening = False
@@ -371,6 +371,10 @@ async def websocket_endpoint(websocket: WebSocket):
     if hub:
         hub.ws_connections.add(websocket)
         print(f"📊 Total WebSocket connections: {len(hub.ws_connections)}")
+        print(f"🔍 Connection object: {websocket}")
+        print(f"🔍 Hub ws_connections: {hub.ws_connections}")
+    else:
+        print("❌ Hub not initialized!")
     
     try:
         # Send initial status
