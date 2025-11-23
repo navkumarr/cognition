@@ -24,7 +24,7 @@ def main():
     print()
     print("Requirements:")
     print("  1. Chrome running with --remote-debugging-port=9222")
-    print("  2. FISH_AUDIO_API_KEY environment variable (optional)")
+    print("  2. FISH_AUDIO_API_KEY environment variable (REQUIRED)")
     print("  3. Chrome extension installed (for simple actions)")
     print()
     print("=" * 60)
@@ -32,8 +32,10 @@ def main():
     
     # Check for API key
     if not os.getenv("FISH_AUDIO_API_KEY"):
-        print("⚠️  Warning: FISH_AUDIO_API_KEY not set - TTS/Fish STT disabled")
+        print("❌ Error: FISH_AUDIO_API_KEY environment variable is required")
+        print("   Set it with: export FISH_AUDIO_API_KEY='your_api_key'")
         print()
+        sys.exit(1)
     
     # Check Chrome
     print("Make sure Chrome is running with:")

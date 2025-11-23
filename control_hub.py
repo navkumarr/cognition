@@ -15,7 +15,7 @@ env_path = Path(__file__).parent / ".env"
 if env_path.exists():
     load_dotenv(env_path)
 
-from services.local_stt import LocalSTT
+from services.fish_stt_continuous_v2 import FishSTTContinuousV2
 from services.fish_stt import FishSTT
 from services.fish_tts import FishTTS
 from parsers.command_parser import CommandParser, CommandType
@@ -48,9 +48,17 @@ class VoiceBrowserHub:
         # Get API key from environment
         fish_api_key = os.getenv("FISH_AUDIO_API_KEY", "")
         
+        if not fish_api_key:
+            raise ValueError("FISH_AUDIO_API_KEY environment variable is required")
+        
         # Initialize components
-        self.local_stt = LocalSTT()
-        self.fish_stt = FishSTT(api_key=fish_api_key) if fish_api_key else None
+        self.local_stt = FishSTTContinuousV2(
+            api_key=fish_api_key,
+            silence_threshold=0.02,
+            silence_duration=1.0,
+            min_audio_duration=0.5
+        )
+        self.fish_stt = FishSTT(api_key=fish_api_key)
         self.fish_tts = FishTTS(api_key=fish_api_key) if fish_api_key else None
         self.parser = CommandParser()
         self.browser_controller = BrowserController()
@@ -62,30 +70,31 @@ class VoiceBrowserHub:
         # WebSocket connections for status updates
         self.ws_connections: set = set()
         
+        # Store event loop for thread-safe async calls
+        self.event_loop = None
+        
         logger.info("Voice Browser Hub initialized")
     
     async def start(self):
         """Start the hub."""
+        # Store the event loop for thread-safe async calls
+        import asyncio
+        self.event_loop = asyncio.get_running_loop()
+        logger.info(f"Event loop stored: {self.event_loop}")
+        
         await self.browser_controller.initialize()
         self._start_local_listening()
-        logger.info("Voice Browser Hub started")
+        logger.info("Voice Browser Hub started (using Fish Audio V2)")
     
     def _start_local_listening(self):
         """Start local STT for command listening."""
         if not self.is_local_listening:
-            # Pass the current event loop to local_stt
-            import asyncio
-            try:
-                self.local_stt.event_loop = asyncio.get_running_loop()
-            except RuntimeError:
-                logger.warning("No running event loop found")
-            
+            # V2 doesn't need event loop - uses threading
             self.local_stt.start_listening(
-                self._handle_local_transcription,
-                partial_callback=self._handle_partial_transcription
+                self._handle_local_transcription_sync
             )
             self.is_local_listening = True
-            logger.info("Local STT listening started")
+            logger.info("Local STT listening started (V2)")
     
     def _stop_local_listening(self):
         """Stop local STT."""
@@ -94,17 +103,22 @@ class VoiceBrowserHub:
             self.is_local_listening = False
             logger.info("Local STT stopped")
     
-    async def _handle_partial_transcription(self, text: str):
+    def _handle_local_transcription_sync(self, text: str):
         """
-        Handle partial transcription from local STT.
+        Handle transcription from local STT (synchronous wrapper for V2).
         
         Args:
-            text: Partial transcribed text
+            text: Transcribed text
         """
-        # Broadcast partial transcription
-        await self.broadcast_transcription(text, partial=True)
-        # Update status to show listening
-        await self.broadcast_status("listening", "Listening...")
+        # V2 calls this from a thread, so schedule async handler
+        if self.event_loop and self.event_loop.is_running():
+            import asyncio
+            asyncio.run_coroutine_threadsafe(
+                self._handle_local_transcription(text),
+                self.event_loop
+            )
+        else:
+            logger.error("No event loop available to handle transcription")
     
     async def _handle_local_transcription(self, text: str):
         """
@@ -179,21 +193,24 @@ class VoiceBrowserHub:
         command = self.parser.parse(text)
         cmd_type = command.get("type")
         print(f"📋 COMMAND TYPE: {cmd_type}")
+        print(f"📋 FULL COMMAND: {command}")
         
         if cmd_type == CommandType.UNKNOWN:
+            print("⚠️  Command not recognized")
             if self.fish_tts:
                 await self.fish_tts.speak("Command not recognized", blocking=False)
+            await self.broadcast_status("idle", "Ready")
             return
         
         # Execute command
         if cmd_type == CommandType.COMPLEX_TASK:
             # Use browser-use for complex tasks
-            print("🤖 Using AI agent for complex task...")
+            description = command.get("description")
+            print(f"🤖 Using AI agent for complex task: '{description}'")
             await self.broadcast_status("processing", "Running AI agent...")
             if self.fish_tts:
                 await self.fish_tts.speak("Executing task", blocking=False)
             
-            description = command.get("description")
             result = await self.browser_controller.execute_complex_task(description)
             print(f"✅ Task result: {result}")
             
@@ -202,7 +219,9 @@ class VoiceBrowserHub:
                 await self.fish_tts.speak("Task complete", blocking=False)
         else:
             # Use simple actions for direct commands
-            print(f"🎯 Executing action: {command}")
+            print(f"🎯 Executing simple action...")
+            print(f"   Type: {cmd_type}")
+            print(f"   Details: {command}")
             await self.broadcast_status("processing", "Executing...")
             success = await self.browser_controller.execute_simple_action(command)
             
