@@ -56,7 +56,8 @@ class VoiceBrowserHub:
             api_key=fish_api_key,
             silence_threshold=0.02,
             silence_duration=1.0,
-            min_audio_duration=0.5
+            min_audio_duration=0.5,
+            status_callback=self._handle_stt_status
         )
         self.fish_stt = FishSTT(api_key=fish_api_key)
         self.fish_tts = FishTTS(api_key=fish_api_key) if fish_api_key else None
@@ -66,6 +67,9 @@ class VoiceBrowserHub:
         # State
         self.is_local_listening = False
         self.is_fish_active = False
+        
+        # Task management - ensure only one task runs at a time
+        self.is_task_running = False
         
         # WebSocket connections for status updates
         self.ws_connections: set = set()
@@ -103,6 +107,17 @@ class VoiceBrowserHub:
             self.is_local_listening = False
             logger.info("Local STT stopped")
     
+    def _handle_stt_status(self, status: str, text: str):
+        """Handle status updates from STT service (called from thread)."""
+        if self.event_loop and self.event_loop.is_running():
+            import asyncio
+            asyncio.run_coroutine_threadsafe(
+                self.broadcast_status(status, text),
+                self.event_loop
+            )
+        else:
+            logger.error("No event loop available for status update")
+    
     def _handle_local_transcription_sync(self, text: str):
         """
         Handle transcription from local STT (synchronous wrapper for V2).
@@ -127,7 +142,7 @@ class VoiceBrowserHub:
         Args:
             text: Transcribed text
         """
-        # Broadcast the final transcription
+        # Broadcast the final transcription (but don't change status yet)
         await self.broadcast_transcription(text, partial=False)
         
         text_lower = text.lower().strip()
@@ -140,8 +155,6 @@ class VoiceBrowserHub:
             self.fish_stt.activate(self._handle_fish_transcription)
             self.is_fish_active = True
             
-            if self.fish_tts:
-                await self.fish_tts.speak("Ready for transcription", blocking=False)
             return
         
         # Check for Fish Audio deactivation
@@ -151,9 +164,7 @@ class VoiceBrowserHub:
             self.fish_stt.deactivate()
             self.is_fish_active = False
             self._start_local_listening()
-            
-            if self.fish_tts:
-                await self.fish_tts.speak("Transcription complete", blocking=False)
+    
             return
         
         # Process as command
@@ -168,9 +179,6 @@ class VoiceBrowserHub:
         """
         logger.info(f"Fish transcription: {text}")
         
-        # For now, just log it - you could send it to a text field
-        if self.fish_tts:
-            await self.fish_tts.speak("Transcription received", blocking=False)
         
         # Send to active text field via browser controller
         command = {
@@ -186,6 +194,12 @@ class VoiceBrowserHub:
         Args:
             text: Command text
         """
+        # Check if a task is already running
+        if self.is_task_running:
+            logger.warning("Task already running, ignoring new command")
+            print("⚠️  Task already in progress")
+            return
+        
         print(f"\n⚙️  PROCESSING: {text}")
         await self.broadcast_status("processing", "Processing...")
         
@@ -197,8 +211,9 @@ class VoiceBrowserHub:
         
         if cmd_type == CommandType.UNKNOWN:
             print("⚠️  Command not recognized")
-            if self.fish_tts:
-                await self.fish_tts.speak("Command not recognized", blocking=False)
+            await self.broadcast_status("error", "Command not recognized")
+            # Reset to ready after error
+            await asyncio.sleep(2)
             await self.broadcast_status("idle", "Ready")
             return
         
@@ -207,37 +222,55 @@ class VoiceBrowserHub:
             # Use browser-use for complex tasks
             description = command.get("description")
             print(f"🤖 Using AI agent for complex task: '{description}'")
-            await self.broadcast_status("processing", "Running AI agent...")
-            if self.fish_tts:
-                await self.fish_tts.speak("Executing task", blocking=False)
             
-            result = await self.browser_controller.execute_complex_task(description)
-            print(f"✅ Task result: {result}")
+            # Mark task as running
+            self.is_task_running = True
             
-            await self.broadcast_status("idle", "Ready")
-            if self.fish_tts:
-                await self.fish_tts.speak("Task complete", blocking=False)
+            await self.broadcast_status("processing", "AI agent working...")
+            
+            try:
+                result = await self.browser_controller.execute_complex_task(description)
+                print(f"✅ Task result: {result}")
+                await self.broadcast_status("idle", "Ready")
+            except Exception as e:
+                print(f"❌ Task failed: {e}")
+                await self.broadcast_status("error", "Task failed")
+                await asyncio.sleep(2)
+                await self.broadcast_status("idle", "Ready")
+            finally:
+                # Always reset task state
+                self.is_task_running = False
         else:
             # Use simple actions for direct commands
             print(f"🎯 Executing simple action...")
             print(f"   Type: {cmd_type}")
             print(f"   Details: {command}")
-            await self.broadcast_status("processing", "Executing...")
-            success = await self.browser_controller.execute_simple_action(command)
             
-            if success:
-                print("✅ Action completed successfully")
-                await self.broadcast_status("idle", "Ready")
-                if self.fish_tts:
-                    await self.fish_tts.speak("Done", blocking=False)
-            else:
-                print("❌ Action failed")
-                await self.broadcast_status("error", "Failed")
-                if self.fish_tts:
-                    await self.fish_tts.speak("Failed", blocking=False)
-                # Reset to ready after error
+            # Mark task as running
+            self.is_task_running = True
+            
+            await self.broadcast_status("processing", "Executing action...")
+            
+            try:
+                success = await self.browser_controller.execute_simple_action(command)
+                
+                if success:
+                    print("✅ Action completed successfully")
+                    await self.broadcast_status("idle", "Ready")
+                else:
+                    print("❌ Action failed")
+                    await self.broadcast_status("error", "Action failed")
+                    # Reset to ready after error
+                    await asyncio.sleep(2)
+                    await self.broadcast_status("idle", "Ready")
+            except Exception as e:
+                print(f"❌ Action error: {e}")
+                await self.broadcast_status("error", "Action error")
                 await asyncio.sleep(2)
                 await self.broadcast_status("idle", "Ready")
+            finally:
+                # Always reset task state
+                self.is_task_running = False
     
     async def broadcast_status(self, status: str, text: str):
         """Broadcast status update to all connected WebSocket clients."""

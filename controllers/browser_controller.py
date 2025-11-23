@@ -93,6 +93,17 @@ class BrowserController:
         if action:
             # Try extension first
             if await self._send_to_extension(action):
+                # Wait for action to complete (scrolling, clicking, etc.)
+                # Add reasonable delay based on action type
+                if cmd_type == "scroll":
+                    await asyncio.sleep(0.8)  # Wait for smooth scroll
+                elif cmd_type == "click":
+                    await asyncio.sleep(0.5)  # Wait for click and potential page load
+                elif cmd_type == "navigate":
+                    await asyncio.sleep(1.5)  # Wait for navigation
+                else:
+                    await asyncio.sleep(0.5)  # Default delay
+                logger.info(f"Action {cmd_type} completed")
                 return True
             
             # Fallback to browser-use for simple commands

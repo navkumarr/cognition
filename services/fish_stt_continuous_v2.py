@@ -24,6 +24,7 @@ class FishSTTContinuousV2:
         silence_threshold: float = 0.02,  # RMS threshold for voice detection
         silence_duration: float = 1.0,    # Seconds of silence before transcribing
         min_audio_duration: float = 0.5,  # Minimum audio length to transcribe
+        status_callback: Optional[Callable] = None,  # Callback for status updates
     ):
         """
         Initialize Fish Audio continuous STT service.
@@ -35,6 +36,7 @@ class FishSTTContinuousV2:
             silence_threshold: RMS level to detect voice vs silence
             silence_duration: How long to wait in silence before transcribing
             min_audio_duration: Minimum audio duration to send to API
+            status_callback: Optional callback for status updates (status, text)
         """
         self.api_key = api_key
         self.api_base = api_base
@@ -42,6 +44,7 @@ class FishSTTContinuousV2:
         self.silence_threshold = silence_threshold
         self.silence_duration = silence_duration
         self.min_audio_duration = min_audio_duration
+        self.status_callback = status_callback
         
         self.is_listening = False
         self.callback_fn: Optional[Callable] = None
@@ -109,6 +112,9 @@ class FishSTTContinuousV2:
                 self.is_recording = True
                 self.audio_buffer = []
                 print("\r🎙️  Recording...", end='', flush=True)
+                # Notify status callback that we're listening
+                if self.status_callback:
+                    self.status_callback("listening", "Listening...")
             
             self.audio_buffer.append(audio_chunk)
             self.silence_chunks = 0
@@ -152,6 +158,10 @@ class FishSTTContinuousV2:
                 return
             
             print(f"\n🔄 Transcribing {duration:.1f}s (RMS: {overall_rms:.4f})...")
+            
+            # Notify that we're processing
+            if self.status_callback:
+                self.status_callback("processing", "Transcribing...")
             
             # Convert to WAV
             wav_data = self._audio_to_wav(audio_data)
@@ -210,12 +220,18 @@ class FishSTTContinuousV2:
                         print(f"\n✅ TRANSCRIBED: '{text}'")
                         logger.info(f"Transcribed: {text}")
                         
+                        # Don't reset to idle - let command processing handle status
+                        # The control_hub will set status based on command execution result
+                        
                         # Call callback
                         if self.callback_fn:
                             self.callback_fn(text)
                     else:
                         print("\n⚠️  Empty transcription")
                         logger.warning("Empty transcription received")
+                        # Reset to idle only for empty transcriptions
+                        if self.status_callback:
+                            self.status_callback("idle", "Ready")
                         
                 else:
                     logger.error(f"Fish Audio API error: {response.status_code} - {response.text}")

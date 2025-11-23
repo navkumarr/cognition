@@ -8,6 +8,30 @@ console.log('Voice browser background script loaded');
 let ws = null;
 let reconnectInterval = null;
 
+// Inject content script into all existing tabs on extension load
+async function injectContentScriptIntoAllTabs() {
+    const tabs = await chrome.tabs.query({});
+    console.log(`📋 Injecting content script into ${tabs.length} existing tabs...`);
+    
+    for (const tab of tabs) {
+        // Skip chrome:// and other restricted URLs
+        if (tab.url && !tab.url.startsWith('chrome://') && !tab.url.startsWith('chrome-extension://')) {
+            try {
+                await chrome.scripting.executeScript({
+                    target: { tabId: tab.id },
+                    files: ['content.js']
+                });
+                console.log(`✅ Injected into tab ${tab.id}`);
+            } catch (error) {
+                console.debug(`Cannot inject into tab ${tab.id}:`, error.message);
+            }
+        }
+    }
+}
+
+// Inject on extension startup
+injectContentScriptIntoAllTabs();
+
 // Connect to Python backend WebSocket
 function connectWebSocket() {
     try {

@@ -57,6 +57,18 @@ styles.textContent = `
         box-shadow: 0 0 12px rgba(59, 130, 246, 0.8);
     }
     
+    .status-listening .status-text::after {
+        content: '';
+        animation: dots 1.5s steps(4, end) infinite;
+    }
+    
+    @keyframes dots {
+        0%, 20% { content: ''; }
+        40% { content: '.'; }
+        60% { content: '..'; }
+        80%, 100% { content: '...'; }
+    }
+    
     .status-processing .status-indicator {
         background: #f59e0b;
         animation: spin 1s linear infinite;
@@ -113,25 +125,43 @@ styles.textContent = `
     }
 `;
 
-// Insert widget when DOM is ready
+// Inject widget on load - force immediate injection
+function injectWidget() {
+    if (!document.getElementById('voice-browser-widget')) {
+        console.log('💉 Injecting voice browser widget...');
+        if (!document.head.contains(styles)) {
+            document.head.appendChild(styles);
+        }
+        if (document.body) {
+            document.body.appendChild(widget);
+            console.log('✅ Widget injected successfully');
+        } else {
+            console.log('⏳ Body not ready, waiting...');
+            setTimeout(injectWidget, 50);
+        }
+    }
+}
+
+// Try immediate injection
+injectWidget();
+
+// Also inject on DOMContentLoaded as fallback
 if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', () => {
-        document.head.appendChild(styles);
-        document.body.appendChild(widget);
-    });
-} else {
-    document.head.appendChild(styles);
-    document.body.appendChild(widget);
+    document.addEventListener('DOMContentLoaded', injectWidget);
 }
 
 // Update widget status
 function updateStatus(status, text) {
+    console.log('🔄 updateStatus called:', status, text);
     const statusDiv = document.getElementById('voice-status');
     const statusText = statusDiv?.querySelector('.status-text');
     
     if (statusDiv && statusText) {
+        console.log('✅ Updating widget:', status, text);
         statusDiv.className = `status-${status}`;
         statusText.textContent = text;
+    } else {
+        console.error('❌ Widget elements not found:', {statusDiv, statusText});
     }
 }
 
