@@ -59,6 +59,9 @@ class VoiceBrowserHub:
         self.is_local_listening = False
         self.is_fish_active = False
         
+        # WebSocket connections for status updates
+        self.ws_connections: set = set()
+        
         logger.info("Voice Browser Hub initialized")
     
     async def start(self):
@@ -77,7 +80,10 @@ class VoiceBrowserHub:
             except RuntimeError:
                 logger.warning("No running event loop found")
             
-            self.local_stt.start_listening(self._handle_local_transcription)
+            self.local_stt.start_listening(
+                self._handle_local_transcription,
+                partial_callback=self._handle_partial_transcription
+            )
             self.is_local_listening = True
             logger.info("Local STT listening started")
     
@@ -88,6 +94,18 @@ class VoiceBrowserHub:
             self.is_local_listening = False
             logger.info("Local STT stopped")
     
+    async def _handle_partial_transcription(self, text: str):
+        """
+        Handle partial transcription from local STT.
+        
+        Args:
+            text: Partial transcribed text
+        """
+        # Broadcast partial transcription
+        await self.broadcast_transcription(text, partial=True)
+        # Update status to show listening
+        await self.broadcast_status("listening", "Listening...")
+    
     async def _handle_local_transcription(self, text: str):
         """
         Handle transcription from local STT.
@@ -95,11 +113,15 @@ class VoiceBrowserHub:
         Args:
             text: Transcribed text
         """
+        # Broadcast the final transcription
+        await self.broadcast_transcription(text, partial=False)
+        
         text_lower = text.lower().strip()
         
         # Check for Fish Audio activation
         if "hey fish" in text_lower and self.fish_stt:
             logger.info("Fish Audio activated")
+            await self.broadcast_status("listening", "Fish Audio Active")
             self._stop_local_listening()
             self.fish_stt.activate(self._handle_fish_transcription)
             self.is_fish_active = True
@@ -111,6 +133,7 @@ class VoiceBrowserHub:
         # Check for Fish Audio deactivation
         if "done fish" in text_lower and self.is_fish_active:
             logger.info("Fish Audio deactivated")
+            await self.broadcast_status("idle", "Ready")
             self.fish_stt.deactivate()
             self.is_fish_active = False
             self._start_local_listening()
@@ -150,6 +173,7 @@ class VoiceBrowserHub:
             text: Command text
         """
         print(f"\n⚙️  PROCESSING: {text}")
+        await self.broadcast_status("processing", "Processing...")
         
         # Parse command
         command = self.parser.parse(text)
@@ -165,6 +189,7 @@ class VoiceBrowserHub:
         if cmd_type == CommandType.COMPLEX_TASK:
             # Use browser-use for complex tasks
             print("🤖 Using AI agent for complex task...")
+            await self.broadcast_status("processing", "Running AI agent...")
             if self.fish_tts:
                 await self.fish_tts.speak("Executing task", blocking=False)
             
@@ -172,21 +197,64 @@ class VoiceBrowserHub:
             result = await self.browser_controller.execute_complex_task(description)
             print(f"✅ Task result: {result}")
             
+            await self.broadcast_status("idle", "Ready")
             if self.fish_tts:
                 await self.fish_tts.speak("Task complete", blocking=False)
         else:
             # Use simple actions for direct commands
             print(f"🎯 Executing action: {command}")
+            await self.broadcast_status("processing", "Executing...")
             success = await self.browser_controller.execute_simple_action(command)
             
             if success:
                 print("✅ Action completed successfully")
+                await self.broadcast_status("idle", "Ready")
                 if self.fish_tts:
                     await self.fish_tts.speak("Done", blocking=False)
             else:
                 print("❌ Action failed")
+                await self.broadcast_status("error", "Failed")
                 if self.fish_tts:
                     await self.fish_tts.speak("Failed", blocking=False)
+                # Reset to ready after error
+                await asyncio.sleep(2)
+                await self.broadcast_status("idle", "Ready")
+    
+    async def broadcast_status(self, status: str, text: str):
+        """Broadcast status update to all connected WebSocket clients."""
+        message = {
+            "type": "status",
+            "action": {"status": status, "text": text}
+        }
+        
+        # Send to all connected WebSocket clients
+        disconnected = set()
+        for ws in self.ws_connections:
+            try:
+                await ws.send_json(message)
+            except Exception as e:
+                logger.debug(f"Failed to send to WebSocket: {e}")
+                disconnected.add(ws)
+        
+        # Remove disconnected clients
+        self.ws_connections -= disconnected
+    
+    async def broadcast_transcription(self, text: str, partial: bool = False):
+        """Broadcast transcription to all connected WebSocket clients."""
+        message = {
+            "type": "transcription",
+            "action": {"text": text, "partial": partial}
+        }
+        
+        disconnected = set()
+        for ws in self.ws_connections:
+            try:
+                await ws.send_json(message)
+            except Exception as e:
+                logger.debug(f"Failed to send to WebSocket: {e}")
+                disconnected.add(ws)
+        
+        self.ws_connections -= disconnected
     
     async def cleanup(self):
         """Clean up resources."""
@@ -242,21 +310,37 @@ async def execute_command(text: str):
 
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
-    """WebSocket endpoint for real-time communication."""
+    """WebSocket endpoint for Chrome extension status updates."""
     await websocket.accept()
-    logger.info("WebSocket client connected")
+    logger.info("✅ WebSocket client connected")
+    print("🔌 Chrome extension connected via WebSocket")
+    
+    # Add to connections
+    if hub:
+        hub.ws_connections.add(websocket)
+        print(f"📊 Total WebSocket connections: {len(hub.ws_connections)}")
     
     try:
+        # Send initial status
+        initial_message = {
+            "type": "status",
+            "action": {"status": "idle", "text": "Ready"}
+        }
+        await websocket.send_json(initial_message)
+        print(f"📤 Sent initial status to extension: {initial_message}")
+        
         while True:
+            # Keep connection alive, receive any messages from extension
             data = await websocket.receive_text()
-            
-            # Process command
-            if hub:
-                await hub._process_command(data)
-                await websocket.send_text(f"Processed: {data}")
+            logger.debug(f"Received from extension: {data}")
     
     except WebSocketDisconnect:
         logger.info("WebSocket client disconnected")
+        print("🔌 Chrome extension disconnected")
+    finally:
+        if hub and websocket in hub.ws_connections:
+            hub.ws_connections.remove(websocket)
+            print(f"📊 Total WebSocket connections: {len(hub.ws_connections)}")
 
 
 def run_server(host: str = "0.0.0.0", port: int = 8080):

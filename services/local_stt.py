@@ -30,6 +30,7 @@ class LocalSTT:
         self.sample_rate = sample_rate
         self.is_listening = False
         self.callback_fn: Optional[Callable] = None
+        self.partial_callback_fn: Optional[Callable] = None
         self.event_loop = None
         
         # Find model path
@@ -46,14 +47,16 @@ class LocalSTT:
         self.model = Model(model_path)
         logger.info("Local STT initialized with Vosk")
     
-    def start_listening(self, callback: Callable[[str], None]):
+    def start_listening(self, callback: Callable[[str], None], partial_callback: Optional[Callable[[str], None]] = None):
         """
         Start listening for voice commands.
         
         Args:
-            callback: Function to call with transcribed text
+            callback: Function to call with final transcribed text
+            partial_callback: Optional function to call with partial transcriptions
         """
         self.callback_fn = callback
+        self.partial_callback_fn = partial_callback
         self.is_listening = True
         
         # Create recognizer for this session
@@ -118,6 +121,13 @@ class LocalSTT:
             if partial_text:
                 # Show what's being recognized in real-time
                 print(f"\r🎙️  {partial_text}", end='', flush=True)
+                
+                # Send partial to callback if available
+                if self.partial_callback_fn and self.event_loop and self.event_loop.is_running():
+                    asyncio.run_coroutine_threadsafe(
+                        self._async_partial_callback(partial_text),
+                        self.event_loop
+                    )
     
     async def _async_callback(self, text: str):
         """Async wrapper for callback."""
@@ -126,3 +136,11 @@ class LocalSTT:
                 await self.callback_fn(text)
             else:
                 self.callback_fn(text)
+    
+    async def _async_partial_callback(self, text: str):
+        """Async wrapper for partial callback."""
+        if self.partial_callback_fn:
+            if asyncio.iscoroutinefunction(self.partial_callback_fn):
+                await self.partial_callback_fn(text)
+            else:
+                self.partial_callback_fn(text)
